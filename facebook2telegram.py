@@ -11,6 +11,8 @@ from datetime import datetime                   #Used for date comparison
 from urllib import request                      #Used for downloading media
 
 import telegram                                 #telegram-bot-python
+from telegram import (InputMediaPhoto,
+                    InputMediaVideo)            #format photo and vid galleries
 from telegram.ext import Updater
 from telegram.error import TelegramError        #Error handling
 from telegram.error import InvalidToken         #Error handling
@@ -76,6 +78,7 @@ def loadSettingsFile(filename):
         settings['allow_link'] = config.getboolean('facebook', 'link')
         settings['allow_shared'] = config.getboolean('facebook', 'shared')
         settings['allow_message'] = config.getboolean('facebook', 'message')
+        settings['allow_event'] = config.getboolean('facebook', 'event')
         settings['telegram_token'] = config.get('telegram', 'token')
         settings['channel_id'] = config.get('telegram', 'channel')
         settings['admin_id'] = config.get('telegram', 'admin')
@@ -92,6 +95,7 @@ def loadSettingsFile(filename):
         print('Allow Link: ' + str(settings['allow_link']))
         print('Allow Shared: ' + str(settings['allow_shared']))
         print('Allow Message: ' + str(settings['allow_message']))
+        print('Allow Event: ' + str(settings['allow_event']))
 
     except configparser.NoSectionError:
         sys.exit('Fatal Error: Missing or invalid settings file.')
@@ -289,8 +293,8 @@ def postPhotoToChat(post, post_message, bot, chat_id):
     try:
         message = bot.send_photo(
             chat_id=chat_id,
-            photo=direct_link,
-            caption=post_message)
+            caption=post_message + '\n' + post['permalink_url'],
+            photo=direct_link)
         return message
 
     except (BadRequest, TimedOut):
@@ -329,6 +333,64 @@ def postPhotoToChat(post, post_message, bot, chat_id):
                 text=direct_link+'\n'+post_message)
             return message
 
+def postPhotosToChat(post, bot, chat_id):
+    '''
+    Posts multiple photos from the post with the appropriate caption.
+    '''
+    media = []
+    gallery = post['attachments']['data'][0]['subattachments']['data']
+    caption = post['message'][:1025]
+    num_media = 0
+    for photo in gallery:
+        url = photo['media']['image']['src']
+        media.append(InputMediaPhoto(media=url, caption=caption))
+        num_media += 1
+        if num_media >= 10:
+            break
+
+    try:
+        message = bot.sendMediaGroup(
+            chat_id=chat_id,
+            media=media)
+        return message
+
+    except (BadRequest, TimedOut):
+        '''If the picture can't be sent using its URL,
+        it is downloaded locally and uploaded to Telegram.'''
+        try:
+            print('Sending by URL failed, downloading file...')
+            request.urlretrieve(gallery[1]['media']['image']['src'],
+                                dir_path+'/temp.jpg')
+            print('Sending file...')
+            with open(dir_path+'/temp.jpg', 'rb') as picture:
+                message = bot.send_photo(
+                    chat_id=chat_id,
+                    photo=picture,
+                    caption=post_message)
+            remove(dir_path+'/temp.jpg')   #Delete the temp picture
+            return message
+
+        except TimedOut:
+            '''If there is a timeout, try again with a higher
+            timeout value for 'bot.send_photo' '''
+            print('File upload timed out, trying again...')
+            print('Sending file...')
+            with open(dir_path+'/temp.jpg', 'rb') as picture:
+                message = bot.send_photo(
+                    chat_id=chat_id,
+                    photo=picture,
+                    caption=post_message,
+                    timeout=120)
+            remove(dir_path+'/temp.jpg')   #Delete the temp picture
+            return message
+
+        except BadRequest:
+            print('Could not send photo file, sending text...')
+            bot.send_message(    #Send message
+                chat_id=chat_id,
+                text=post_message)
+            return message
+
 
 def postVideoToChat(post, post_message, bot, chat_id):
     """
@@ -346,7 +408,7 @@ def postVideoToChat(post, post_message, bot, chat_id):
         print('Sending YouTube link...')
         bot.send_message(
             chat_id=chat_id,
-            text=post['link'])
+            text=post['message'] + '\n' + post['permalink_url'])
     else:
         if 'object_id' in post:
             direct_link = getDirectURLVideo(post['object_id'])
@@ -355,7 +417,7 @@ def postVideoToChat(post, post_message, bot, chat_id):
             message = bot.send_video(
                 chat_id=chat_id,
                 video=direct_link,
-                caption=post_message)
+                caption=post_message + '\n' + post['permalink_url'])
             return message
 
         except TelegramError:        #If the API can't send the video
@@ -364,7 +426,7 @@ def postVideoToChat(post, post_message, bot, chat_id):
                 message = bot.send_video(
                     chat_id=chat_id,
                     video=getDirectURLVideoYDL(post['link']),
-                    caption=post_message)
+                    caption=post_message + '\n' + post['permalink_url'])
                 return message
 
             except TelegramError:
@@ -373,7 +435,7 @@ def postVideoToChat(post, post_message, bot, chat_id):
                     message = bot.send_video(
                         chat_id=chat_id,
                         video=post['source'],
-                        caption=post_message)
+                        caption=post_message + '\n' + post['permalink_url'])
                     return message
 
                 except TelegramError:    #If it still can't send the video
@@ -394,11 +456,11 @@ def postVideoToChat(post, post_message, bot, chat_id):
                         print('Could not post video, sending link...')
                         message = bot.send_message(#Send direct link as message
                             chat_id=chat_id,
-                            text=direct_link+'\n'+post_message)
+                            text=post_message+'\n'+direct_link)
                         return message
 
 
-def postLinkToChat(post, post_message, bot, chat_id):
+def postLinkToChat(post, post_url, post_message, bot, chat_id):
     '''
     Checks if the post has a message with its link in it. If it does,
     it sends only the message. If not, it sends the link followed by the
@@ -411,7 +473,24 @@ def postLinkToChat(post, post_message, bot, chat_id):
 
     bot.send_message(
         chat_id=chat_id,
-        text=post_link+'\n'+post_message)
+        text=post_link+'\n'+post_message + '\n' + post_url)
+
+# def postEventToChat(post, post_message, bot, chat_id):
+#     '''
+#     Posts an event to chat
+#     '''
+#     direct_link = post['full_picture']
+
+    # try:
+    #     message = bot.send_photo(
+    #         chat_id=chat_id,
+    #         photo=direct_link,
+    #         caption=post_message)
+    #     return message
+#
+#     bot.send_message(
+#         chat_id=chat_id,
+#         text=post_link+'\n'+post_message)
 
 
 def checkIfAllowedAndPost(post, bot, chat_id):
@@ -425,7 +504,7 @@ def checkIfAllowedAndPost(post, bot, chat_id):
         parent_post = graph.get_object(
             id=post['parent_id'],
             fields='created_time,type,message,full_picture,story,\
-                    source,link,caption,parent_id,object_id',
+                    source,link,caption,parent_id,object_id,permalink_url',
             locale=settings['locale'])
         print('Accessing parent post...')
         checkIfAllowedAndPost(parent_post, bot, chat_id)
@@ -434,8 +513,9 @@ def checkIfAllowedAndPost(post, bot, chat_id):
     '''If there's a message in the post, and it's allowed by the
     settings file, store it in 'post_message', which will be passed to
     another function based on the post type.'''
+    post_url = post['permalink_url']
     if 'message' in post and settings['allow_message']:
-        post_message = post['message']
+        post_message = post['message'] + '\n' + post_url
     else:
         post_message = ''
 
@@ -451,11 +531,16 @@ def checkIfAllowedAndPost(post, bot, chat_id):
         send_separate = False
 
     if post['type'] == 'photo' and settings['allow_photo']:
-        print('Posting photo...')
-        media_message = postPhotoToChat(post, post_message, bot, chat_id)
-        if send_separate:
-            media_message.reply_text(separate_message)
+        if 'subattachments' not in post['attachments']['data'][0]:
+            print('Posting photo...')
+            media_message = postPhotoToChat(post, post_message, bot, chat_id)
+            if send_separate:
+                media_message.reply_text(separate_message)
+        else:
+            print('Posting photo gallery...')
+            media_message = postPhotosToChat(post, bot, chat_id)
         return True
+
     elif post['type'] == 'video' and settings['allow_video']:
         print('Posting video...')
         media_message = postVideoToChat(post, post_message, bot, chat_id)
@@ -467,17 +552,17 @@ def checkIfAllowedAndPost(post, bot, chat_id):
         try:
             bot.send_message(
                 chat_id=chat_id,
-                text=post['message'])
+                text=post['message'] + '\n' + post['permalink_url'])
             return True
         except KeyError:
             print('Message not found, posting story...')
             bot.send_message(
                 chat_id=chat_id,
-                text=post['story'])
+                text=post_url + '\n' + post['story'])
             return True
     elif post['type'] == 'link' and settings['allow_link']:
         print('Posting link...')
-        postLinkToChat(post, post_message, bot, chat_id)
+        postLinkToChat(post, post_url, post_message, bot, chat_id)
         return True
     else:
         print('This post is a {}, skipping...'.format(post['type']))
@@ -573,7 +658,8 @@ def periodicCheck(bot, job):
             fields='name,\
                     posts{\
                           created_time,type,message,full_picture,story,\
-                          source,link,caption,parent_id,object_id}',
+                          source,link,caption,parent_id,object_id,\
+                          permalink_url,attachments}',
             locale=settings['locale'])
 
         #If there is an admin chat ID in the settings file
