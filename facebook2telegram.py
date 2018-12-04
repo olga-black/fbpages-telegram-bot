@@ -425,7 +425,7 @@ def postVideoToChat(post, post_message, bot, chat_id):
                 print('Could not post video, trying youtube-dl...')
                 message = bot.send_video(
                     chat_id=chat_id,
-                    video=getDirectURLVideoYDL(post['link']),
+                    video=getDirectURLVideoYDL(post['permalink_url']),
                     caption=post_message + '\n' + post['permalink_url'])
                 return message
 
