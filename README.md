@@ -55,6 +55,7 @@ To get started with the bot itself:
 | `link`        | Allow link posts. Format: `True` or `False`                    |
 | `shared`      | Allow shared posts. Format: `True` or `False`                  |
 | `message`     | Allow message in posts. Format: `True` or `False`              |
+| `event`       | Allow event in posts. Format: `True` or `False`                |
 
 #### Telegram section
 
