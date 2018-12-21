@@ -9,6 +9,7 @@ import sys                                      #Used for exiting the program
 from time import sleep
 from datetime import datetime                   #Used for date comparison
 from urllib import request                      #Used for downloading media
+import re                                       #Used for youtube url patterns
 
 import telegram                                 #telegram-bot-python
 from telegram import (InputMediaPhoto,
@@ -36,7 +37,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 #youtube-dl
-ydl = youtube_dl.YoutubeDL({'outtmpl': '%(id)s%(ext)s'})
+ydl = youtube_dl.YoutubeDL({'outtmpl': '{%(id)s%(ext)s}'})
+
+YT_PATTERN = r"(https:\/\/youtu\.be\/[A-z0-9]{11}|https:\/\/www\.youtube\.com\/watch\?v=[A-z0-9]{11})"
 
 settings = {}
 dir_path = None
@@ -115,7 +118,7 @@ def loadFacebookGraph(facebook_token):
     Initialize Facebook GraphAPI with the token loaded from the settings file
     '''
     global graph
-    graph = facebook.GraphAPI(access_token=facebook_token, version='2.7')
+    graph = facebook.GraphAPI(access_token=facebook_token, version='3.1')
 
 
 def loadTelegramBot(telegram_token):
@@ -263,6 +266,42 @@ def getDirectURLVideo(video_id):
 
     return video_post['source']
 
+def getVideoURLFromText(post_message):
+    """
+    Looking for a youtube video link in the message text
+    """
+    print("Hello from getVideoURLFromText")
+    yt_pattern = r"(https:\/\/youtu\.be\/[A-z0-9]{11}|https:\/\/www\.youtube\.com\/watch\?v=[A-z0-9]{11})"
+    yt1 = r"https:\/\/youtu\.be\/.{11}"
+    yt2 = r"https:\/\/www\.youtube\.com\/watch\?v=.{11}"
+    try:
+        if re.findall(yt1, post_message):
+            id = re.findall(r"https:\/\/youtu\.be\/([A-z0-9]{11})", post_message)
+            id = str(id).strip("['").rstrip("']")
+            video = "https://www.youtube.com/watch?v={}".format(id)
+        else:
+            video = re.findall(yt2, post_message)
+            video = str(video).strip('[').rstrip(']')
+        return video
+
+    except Exception as e:
+        print(e)
+        return None
+
+def processPostMessage(post_message):
+    """
+    Check if the message is >500 characters
+    If it is, shorten it to 500 characters
+    Ouput: a tuple of strings: read_more (empty if not shortened), post text
+    """
+    if len(post_message) > 500:
+        post_message = post_message[:500]
+        last_space = post_message.rfind(' ')
+        post_message = post_message[:last_space]
+        post_message += "..."
+        return "\nЧитати далі:\n", post_message
+    return "", post_message
+
 
 def getDirectURLVideoYDL(URL):
     '''
@@ -284,7 +323,7 @@ def getDirectURLVideoYDL(URL):
         return None
 
 
-def postPhotoToChat(post, post_message, bot, chat_id):
+def postPhotoToChat(post, read_more, post_url, post_message, bot, chat_id):
     '''
     Posts the post's picture with the appropriate caption.
     '''
@@ -293,7 +332,7 @@ def postPhotoToChat(post, post_message, bot, chat_id):
     try:
         message = bot.send_photo(
             chat_id=chat_id,
-            caption=post_message + '\n' + post['permalink_url'],
+            caption=post_message + '\n' + read_more + post_url,
             photo=direct_link)
         return message
 
@@ -333,20 +372,14 @@ def postPhotoToChat(post, post_message, bot, chat_id):
                 text=direct_link+'\n'+post_message)
             return message
 
-def postPhotosToChat(post, bot, chat_id):
+def postPhotosToChat(post, gallery, bot, chat_id):
     '''
-    Posts multiple photos from the post with the appropriate caption.
+    Posts multiple photos from the post without a caption
     '''
     media = []
-    gallery = post['attachments']['data'][0]['subattachments']['data']
-    caption = post['message'][:1025]
-    num_media = 0
     for photo in gallery:
         url = photo['media']['image']['src']
-        media.append(InputMediaPhoto(media=url, caption=caption))
-        num_media += 1
-        if num_media >= 10:
-            break
+        media.append(InputMediaPhoto(media=url))
 
     try:
         message = bot.sendMediaGroup(
@@ -365,8 +398,7 @@ def postPhotosToChat(post, bot, chat_id):
             with open(dir_path+'/temp.jpg', 'rb') as picture:
                 message = bot.send_photo(
                     chat_id=chat_id,
-                    photo=picture,
-                    caption=post_message)
+                    photo=picture)
             remove(dir_path+'/temp.jpg')   #Delete the temp picture
             return message
 
@@ -378,64 +410,84 @@ def postPhotosToChat(post, bot, chat_id):
             with open(dir_path+'/temp.jpg', 'rb') as picture:
                 message = bot.send_photo(
                     chat_id=chat_id,
-                    photo=picture,
-                    caption=post_message,
-                    timeout=120)
+                    photo=picture)
             remove(dir_path+'/temp.jpg')   #Delete the temp picture
             return message
 
         except BadRequest:
-            print('Could not send photo file, sending text...')
-            bot.send_message(    #Send message
-                chat_id=chat_id,
-                text=post_message)
-            return message
+            print('Could not send photo file...')
+            return False
 
 
-def postVideoToChat(post, post_message, bot, chat_id):
+def postVideoToChat(post, read_more, post_message, bot, chat_id):
     """
     This function tries to pass 3 different URLs to the Telegram API
     instead of downloading the video file locally to save bandwidth.
 
     *First option":  Direct video source
-    *Second option": Direct video source from youtube-dl
+    *Second option": Direct video source from text
     *Third option":  Direct video source with smaller resolution
     "Fourth option": Download file locally for upload
     "Fifth option":  Send the video link
     """
-    #If youtube link, post the link
-    if 'caption' in post and post['caption'] == 'youtube.com':
+    # If youtube link, post the link
+    if ('caption' in post and post['caption'] == 'youtube.com'):
         print('Sending YouTube link...')
         bot.send_message(
             chat_id=chat_id,
-            text=post['message'] + '\n' + post['permalink_url'])
+            text=post_message + '\n' + read_more + post['permalink_url'])
+        print("Sent as message")
+    elif ('object_id' in post) and ('link' in post):
+        print('Sending Facebook video link...')
+        direct_link = post['link']
+        if read_more:
+            bot.send_message(
+                chat_id=chat_id,
+                text=post_message + '\n' + direct_link + '\n' + read_more + post['permalink_url'])
+        else:
+            bot.send_message(
+                chat_id=chat_id,
+                text=post_message + '\n' + direct_link)
+        print("Sent as message")
     else:
-        if 'object_id' in post:
+        if ['object_id'] in post:
             direct_link = getDirectURLVideo(post['object_id'])
+        else:
+            direct_link = getDirectURLVideo(post['id'])
 
         try:
             message = bot.send_video(
                 chat_id=chat_id,
                 video=direct_link,
                 caption=post_message + '\n' + post['permalink_url'])
+            print("Sent by object id")
             return message
 
         except TelegramError:        #If the API can't send the video
             try:
-                print('Could not post video, trying youtube-dl...')
-                message = bot.send_video(
+                print("Looking for video url in the text...")
+                video_link = getVideoURLFromText(post_message)
+                print("Found video link", video_link)
+                message=bot.sendVideo(
                     chat_id=chat_id,
-                    video=getDirectURLVideoYDL(post['permalink_url']),
+                    video=video_link,
                     caption=post_message + '\n' + post['permalink_url'])
+                print("Sent message to telegram")
+
+                    # print('Could not post video, trying youtube-dl...')
+                    # message = bot.send_video(
+                    #     chat_id=chat_id,
+                    #     video=getDirectURLVideoYDL(post['link']),
+                    #     caption=post_message + '\n' + post['permalink_url'])
                 return message
 
-            except TelegramError:
+            except TelegramError as e:
                 try:
                     print('Could not post video, trying smaller res...')
                     message = bot.send_video(
                         chat_id=chat_id,
                         video=post['source'],
-                        caption=post_message + '\n' + post['permalink_url'])
+                        caption=post_message + '\n')
                     return message
 
                 except TelegramError:    #If it still can't send the video
@@ -460,7 +512,7 @@ def postVideoToChat(post, post_message, bot, chat_id):
                         return message
 
 
-def postLinkToChat(post, post_url, post_message, bot, chat_id):
+def postLinkToChat(post, read_more, post_url, post_message, bot, chat_id):
     '''
     Checks if the post has a message with its link in it. If it does,
     it sends only the message. If not, it sends the link followed by the
@@ -473,24 +525,35 @@ def postLinkToChat(post, post_url, post_message, bot, chat_id):
 
     bot.send_message(
         chat_id=chat_id,
-        text=post_link+'\n'+post_message + '\n' + post_url)
+        text=post_link+'\n'+post_message + '\n' + read_more + post_url)
 
-# def postEventToChat(post, post_message, bot, chat_id):
-#     '''
-#     Posts an event to chat
-#     '''
-#     direct_link = post['full_picture']
 
-    # try:
-    #     message = bot.send_photo(
-    #         chat_id=chat_id,
-    #         photo=direct_link,
-    #         caption=post_message)
-    #     return message
-#
-#     bot.send_message(
-#         chat_id=chat_id,
-#         text=post_link+'\n'+post_message)
+def postEventToChat(post, post_message, bot, chat_id):
+    '''
+    Posts an event to chat as a link
+    Message includes event name, date, time, location, and post text
+    '''
+    event_link = post['link']
+    event_id = post['attachments']['data'][0]["target"]['id']
+    event = graph.get_object(id=event_id,
+                            fields='name,place,start_time')
+
+    name = '*' + event['name'] + '*' + '\n'
+    time = event['start_time'].split('T')
+    datetime = "*{}, {}*\n".format(time[0], time[1][:5])
+    if 'place' in event:
+        venue = '*' + event['place']['name'] + '*' + '\n'
+    else:
+        venue = '*TBA*' + '\n'
+    message =  name + venue + datetime + "-"*26 + '\n' + post_message
+
+    bot.send_message(
+        chat_id=chat_id,
+        text= event_link + '\n' + message,
+        parse_mode='Markdown')
+
+
+
 
 
 def checkIfAllowedAndPost(post, bot, chat_id):
@@ -503,7 +566,7 @@ def checkIfAllowedAndPost(post, bot, chat_id):
         print('This is a shared post.')
         parent_post = graph.get_object(
             id=post['parent_id'],
-            fields='created_time,type,message,full_picture,story,\
+            fields='created_time,id,type,message,full_picture,story,\
                     source,link,caption,parent_id,object_id,permalink_url',
             locale=settings['locale'])
         print('Accessing parent post...')
@@ -513,46 +576,52 @@ def checkIfAllowedAndPost(post, bot, chat_id):
     '''If there's a message in the post, and it's allowed by the
     settings file, store it in 'post_message', which will be passed to
     another function based on the post type.'''
-    post_url = post['permalink_url']
-    if 'message' in post and settings['allow_message']:
-        post_message = post['message'] + '\n' + post_url
-    else:
-        post_message = ''
 
-    #Telegram doesn't allow media captions with more than 200 characters
-    #Send separate message with the post's message
-    if (len(post_message) > 200) and \
-                        (post['type'] == 'photo' or post['type'] == 'video'):
-        separate_message = post_message
-        post_message = ''
-        send_separate = True
+    try:
+        post_url = post['permalink_url']
+    except KeyError:
+        if post['type'] == 'photo':
+            post_url = post['link']
+        else:
+            post_url = ''
+
+    if 'message' in post and settings['allow_message']:
+        read_more, post_message = processPostMessage(post['message'])
     else:
-        separate_message = ''
-        send_separate = False
+        read_more, post_message = '', ''
 
     if post['type'] == 'photo' and settings['allow_photo']:
         if 'subattachments' not in post['attachments']['data'][0]:
             print('Posting photo...')
-            media_message = postPhotoToChat(post, post_message, bot, chat_id)
-            if send_separate:
-                media_message.reply_text(separate_message)
+            media_message = postPhotoToChat(post, read_more, post_url, post_message, bot, chat_id)
+            """Posting a post with multiple photos
+            Caption goes a separate message since telegram doesn't allow
+            a message with a photo gallery
+            Telegram takes up to 10 photos in one post
+            Therefore only up to 10 photos out of a post/album will be shared
+            """
         else:
+            if 'message' in post:
+                print('Posting the gallery caption text...')
+                bot.send_message(
+                    chat_id=chat_id,
+                    text=post_message + '\n' + read_more + post_url)
+            all_photos = post['attachments']['data'][0]['subattachments']['data'][:10]
             print('Posting photo gallery...')
-            media_message = postPhotosToChat(post, bot, chat_id)
+            media_message = postPhotosToChat(post, all_photos, bot, chat_id)
         return True
 
     elif post['type'] == 'video' and settings['allow_video']:
         print('Posting video...')
-        media_message = postVideoToChat(post, post_message, bot, chat_id)
-        if send_separate:
-            media_message.reply_text(separate_message)
+        read_more, post_message = processPostMessage(post['message'])
+        media_message = postVideoToChat(post, read_more, post_message, bot, chat_id)
         return True
     elif post['type'] == 'status' and settings['allow_status']:
         print('Posting status...')
         try:
             bot.send_message(
                 chat_id=chat_id,
-                text=post['message'] + '\n' + post['permalink_url'])
+                text=post_message + '\n' + read_more + post['permalink_url'])
             return True
         except KeyError:
             print('Message not found, posting story...')
@@ -562,11 +631,22 @@ def checkIfAllowedAndPost(post, bot, chat_id):
             return True
     elif post['type'] == 'link' and settings['allow_link']:
         print('Posting link...')
-        postLinkToChat(post, post_url, post_message, bot, chat_id)
+        postLinkToChat(post, read_more, post_url, post_message, bot, chat_id)
         return True
+    elif post['type'] == 'event' and settings['allow_event']:
+        try:
+            print('Posting event...')
+            postEventToChat(post, post_message, bot, chat_id)
+            return True
+        except Exception as e:
+            print("Couldn't share event:\n", e)
+            return False
+
     else:
         print('This post is a {}, skipping...'.format(post['type']))
         return False
+
+
 
 
 def postToChat(post, bot, chat_id):
@@ -657,7 +737,7 @@ def periodicCheck(bot, job):
             ids=facebook_pages,
             fields='name,\
                     posts{\
-                          created_time,type,message,full_picture,story,\
+                          created_time,id,type,message,full_picture,story,\
                           source,link,caption,parent_id,object_id,\
                           permalink_url,attachments}',
             locale=settings['locale'])
