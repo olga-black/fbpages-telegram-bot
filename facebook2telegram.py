@@ -1,4 +1,9 @@
 # coding=utf-8
+"""
+Last done:
+changed error handling in postPhotosToChat,
+loading only up to 10 photos when fetching posts from FB
+"""
 import ast                                      #Used for pages list in ini
 import configparser                             #Used for loading configs
 import json                                     #Used for tacking last dates
@@ -255,16 +260,16 @@ def getMostRecentPostsDates(facebook_pages, filename):
         dumpDatesJSON(last_posts_dates, filename)
 
 
-def getDirectURLVideo(video_id):
+def getDirectURLVideo(post_id):
     '''
-    Get direct URL for the video using GraphAPI and the post's 'object_id'
+    Get direct URL for the video using GraphAPI and the post's 'attachments{media{source}}'
     '''
     print('Getting direct URL...')
     video_post = graph.get_object(
-            id=video_id,
-            fields='source')
+            id=post_id,
+            fields='attachments{media}')
 
-    return video_post['source']
+    return video_post['attachments']['data'][0]["media"]['source']
 
 def getVideoURLFromText(post_message):
     """
@@ -387,36 +392,25 @@ def postPhotosToChat(post, gallery, bot, chat_id):
             media=media)
         return message
 
-    except (BadRequest, TimedOut):
+    except TimedOut:
         '''If the picture can't be sent using its URL,
         it is downloaded locally and uploaded to Telegram.'''
-        try:
-            print('Sending by URL failed, downloading file...')
-            request.urlretrieve(gallery[1]['media']['image']['src'],
-                                dir_path+'/temp.jpg')
-            print('Sending file...')
-            with open(dir_path+'/temp.jpg', 'rb') as picture:
-                message = bot.send_photo(
-                    chat_id=chat_id,
-                    photo=picture)
-            remove(dir_path+'/temp.jpg')   #Delete the temp picture
-            return message
 
-        except TimedOut:
-            '''If there is a timeout, try again with a higher
-            timeout value for 'bot.send_photo' '''
-            print('File upload timed out, trying again...')
-            print('Sending file...')
-            with open(dir_path+'/temp.jpg', 'rb') as picture:
-                message = bot.send_photo(
-                    chat_id=chat_id,
-                    photo=picture)
-            remove(dir_path+'/temp.jpg')   #Delete the temp picture
-            return message
+        print('Sending by URL failed, downloading file...')
+        request.urlretrieve(gallery[1]['media']['image']['src'],
+                            dir_path+'/temp.jpg')
+        print('Sending file...')
+        with open(dir_path+'/temp.jpg', 'rb') as picture:
+            message = bot.send_photo(
+                chat_id=chat_id,
+                photo=picture)
+        remove(dir_path+'/temp.jpg')   #Delete the temp picture
+        return message
 
-        except BadRequest:
-            print('Could not send photo file...')
-            return False
+
+    except BadRequest:
+        print('Could not send photo file...')
+        return False
 
 
 def postVideoToChat(post, read_more, post_message, bot, chat_id):
@@ -431,15 +425,15 @@ def postVideoToChat(post, read_more, post_message, bot, chat_id):
     "Fifth option":  Send the video link
     """
     # If youtube link, post the link
-    if ('caption' in post and post['caption'] == 'youtube.com'):
+    if post['status_type'] == 'shared_story' and ('youtube.com' in post['message']):
         print('Sending YouTube link...')
         bot.send_message(
             chat_id=chat_id,
             text=post_message + '\n' + read_more + post['permalink_url'])
         print("Sent as message")
-    elif ('object_id' in post) and ('link' in post):
+    elif post['status_type'] == 'added_video':
         print('Sending Facebook video link...')
-        direct_link = post['link']
+        direct_link = post['attachments']['data'][0]["media"]['source']
         if read_more:
             bot.send_message(
                 chat_id=chat_id,
@@ -450,10 +444,10 @@ def postVideoToChat(post, read_more, post_message, bot, chat_id):
                 text=post_message + '\n' + direct_link)
         print("Sent as message")
     else:
-        if ['object_id'] in post:
-            direct_link = getDirectURLVideo(post['object_id'])
-        else:
-            direct_link = getDirectURLVideo(post['id'])
+        # if 'attachments' in post:
+        #     direct_link = getDirectURLVideo(post['attachments']['data'][0]["media"]['source'])
+        # else:
+        direct_link = getDirectURLVideo(post['id'])
 
         try:
             message = bot.send_video(
@@ -477,7 +471,7 @@ def postVideoToChat(post, read_more, post_message, bot, chat_id):
                     # print('Could not post video, trying youtube-dl...')
                     # message = bot.send_video(
                     #     chat_id=chat_id,
-                    #     video=getDirectURLVideoYDL(post['link']),
+                    #     video=getDirectURLVideoYDL(post['attachments']['data'][0]['url']),
                     #     caption=post_message + '\n' + post['permalink_url'])
                 return message
 
@@ -518,10 +512,10 @@ def postLinkToChat(post, read_more, post_url, post_message, bot, chat_id):
     it sends only the message. If not, it sends the link followed by the
     post's message.
     '''
-    if post['link'] in post_message:
+    if 'http' in post_message:
         post_link = ''
     else:
-        post_link = post['link']
+        post_link = post['attachments']['data'][0]['url']
 
     bot.send_message(
         chat_id=chat_id,
@@ -533,8 +527,8 @@ def postEventToChat(post, post_message, bot, chat_id):
     Posts an event to chat as a link
     Message includes event name, date, time, location, and post text
     '''
-    event_link = post['link']
-    event_id = post['attachments']['data'][0]["target"]['id']
+    event_link = post['attachments']['data'][0]['url']
+    event_id = post['id'].split("_")[1]
     event = graph.get_object(id=event_id,
                             fields='name,place,start_time')
 
@@ -566,8 +560,9 @@ def checkIfAllowedAndPost(post, bot, chat_id):
         print('This is a shared post.')
         parent_post = graph.get_object(
             id=post['parent_id'],
-            fields='created_time,id,type,message,full_picture,story,\
-                    source,link,caption,parent_id,object_id,permalink_url',
+            fields='created_time,id,message,full_picture,story,\
+                    status_type,parent_id,attachments{media,url,subattachments},\
+                    permalink_url',
             locale=settings['locale'])
         print('Accessing parent post...')
         checkIfAllowedAndPost(parent_post, bot, chat_id)
@@ -580,8 +575,8 @@ def checkIfAllowedAndPost(post, bot, chat_id):
     try:
         post_url = post['permalink_url']
     except KeyError:
-        if post['type'] == 'photo':
-            post_url = post['link']
+        if post['status_type'] == 'added_photos':
+            post_url = post['attachments']['data'][0]['url']
         else:
             post_url = ''
 
@@ -590,10 +585,12 @@ def checkIfAllowedAndPost(post, bot, chat_id):
     else:
         read_more, post_message = '', ''
 
-    if post['type'] == 'photo' and settings['allow_photo']:
-        if 'subattachments' not in post['attachments']['data'][0]:
+    if post['status_type'] == 'added_photos' and settings['allow_photo']:
+        if 'attachments{subattachments}' not in post:
             print('Posting photo...')
             media_message = postPhotoToChat(post, read_more, post_url, post_message, bot, chat_id)
+
+
             """Posting a post with multiple photos
             Caption goes a separate message since telegram doesn't allow
             a message with a photo gallery
@@ -611,12 +608,15 @@ def checkIfAllowedAndPost(post, bot, chat_id):
             media_message = postPhotosToChat(post, all_photos, bot, chat_id)
         return True
 
-    elif post['type'] == 'video' and settings['allow_video']:
+    elif (post['status_type'] == 'added_video' or (post['status_type'] == 'shared_story' and 'youtube.com' in post['message'])) and settings['allow_video']:
         print('Posting video...')
-        read_more, post_message = processPostMessage(post['message'])
+        try:
+            read_more, post_message = processPostMessage(post['message'])
+        except KeyError:
+            read_more, post_message = "", ""
         media_message = postVideoToChat(post, read_more, post_message, bot, chat_id)
         return True
-    elif post['type'] == 'status' and settings['allow_status']:
+    elif post['status_type'] == 'mobile_status_update' and settings['allow_status']:
         print('Posting status...')
         try:
             bot.send_message(
@@ -629,11 +629,11 @@ def checkIfAllowedAndPost(post, bot, chat_id):
                 chat_id=chat_id,
                 text=post_url + '\n' + post['story'])
             return True
-    elif post['type'] == 'link' and settings['allow_link']:
+    elif post['status_type'] == 'shared_story' and settings['allow_link']:
         print('Posting link...')
         postLinkToChat(post, read_more, post_url, post_message, bot, chat_id)
         return True
-    elif post['type'] == 'event' and settings['allow_event']:
+    elif post['status_type'] == 'created_event' and settings['allow_event']:
         try:
             print('Posting event...')
             postEventToChat(post, post_message, bot, chat_id)
@@ -643,7 +643,7 @@ def checkIfAllowedAndPost(post, bot, chat_id):
             return False
 
     else:
-        print('This post is a {}, skipping...'.format(post['type']))
+        print('This post has a status type of "{}", skipping...'.format(post['status_type']))
         return False
 
 
@@ -738,8 +738,8 @@ def periodicCheck(bot, job):
             fields='name,\
                     posts{\
                           created_time,id,type,message,full_picture,story,\
-                          source,link,caption,parent_id,object_id,\
-                          permalink_url,attachments}',
+                          caption,parent_id,attachments{media,url,subattachments.limit(10)},status_type,\
+                          permalink_url}',
             locale=settings['locale'])
 
         #If there is an admin chat ID in the settings file
@@ -758,8 +758,9 @@ def periodicCheck(bot, job):
             print('Successfully fetched Facebook posts.')
 
     #Error in the Facebook API
-    except facebook.GraphAPIError:
+    except facebook.GraphAPIError as e:
         print('Error: Could not get Facebook posts.')
+        print(e)
         '''
         TODO: 'get_object' for every page individually, due to a bug
         in the Graph API that makes some pages return an OAuthException 1,
