@@ -341,10 +341,11 @@ def postPhotoToChat(post, read_more, post_url, post_message, bot, chat_id):
             photo=direct_link)
         return message
 
-    except (BadRequest, TimedOut):
+    except (BadRequest, TimedOut) as e:
         '''If the picture can't be sent using its URL,
         it is downloaded locally and uploaded to Telegram.'''
         try:
+            print(e)
             print('Sending by URL failed, downloading file...')
             request.urlretrieve(direct_link, dir_path+'/temp.jpg')
             print('Sending file...')
@@ -352,7 +353,7 @@ def postPhotoToChat(post, read_more, post_url, post_message, bot, chat_id):
                 message = bot.send_photo(
                     chat_id=chat_id,
                     photo=picture,
-                    caption=post_message)
+                    caption=post_message + '\n' + read_more + post_url)
             remove(dir_path+'/temp.jpg')   #Delete the temp picture
             return message
 
