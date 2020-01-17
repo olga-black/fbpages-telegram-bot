@@ -185,10 +185,10 @@ def dateTimeDecoder(pairs, date_format="%Y-%m-%dT%H:%M:%S"):
     return d
 
 
-def loadDatesJSON(last_posts_dates, filename):
+def loadDatesJSON(filename):
     '''
     Loads the .json file containing the latest post's date for every page
-    loaded from the settings file to the 'last_posts_dates' dict
+    loaded from the settings file to a dict
     '''
     with open(filename, 'r') as f:
         loaded_json = json.load(f, object_pairs_hook=dateTimeDecoder)
@@ -230,7 +230,7 @@ def getMostRecentPostsDates(facebook_pages, filename):
     print('Trying to load JSON file...')
 
     try:
-        last_posts_dates = loadDatesJSON(last_posts_dates, filename)
+        last_posts_dates = loadDatesJSON(filename)
 
         for page in facebook_pages:
             if page not in last_posts_dates:
