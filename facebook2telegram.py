@@ -293,7 +293,7 @@ def getVideoURLFromText(post_message):
         print(e)
         return None
 
-def processPostMessage(post_message):
+def processPostMessage(post_message, status_type):
     """
     Check if the message is >500 characters
     If it is, shorten it to 500 characters
@@ -304,6 +304,8 @@ def processPostMessage(post_message):
         last_space = post_message.rfind(' ')
         post_message = post_message[:last_space]
         post_message += "..."
+        if status_type == 'added_video':
+            return "\nЧитати повністю і дивитися відео:\n", post_message
         return "\nЧитати далі:\n", post_message
     return "", post_message
 
@@ -433,16 +435,15 @@ def postVideoToChat(post, read_more, post_message, bot, chat_id):
             text=post_message + '\n' + read_more + post['permalink_url'])
         print("Sent as message")
     elif post['status_type'] == 'added_video':
-        print('Sending Facebook video link...')
-        direct_link = post['attachments']['data'][0]["media"]['source']
+        print('Sending post with Facebook video as message...')
         if read_more:
             bot.send_message(
                 chat_id=chat_id,
-                text=post_message + '\n' + direct_link + '\n' + read_more + post['permalink_url'])
+                text=post_message + '\n' + read_more + post['permalink_url'])
         else:
             bot.send_message(
                 chat_id=chat_id,
-                text=post_message + '\n' + direct_link)
+                text=post_message + '\n\n' + "Оригінальний пост з відео:\n" + post['permalink_url'])
         print("Sent as message")
     else:
         # if 'attachments' in post:
@@ -582,7 +583,7 @@ def checkIfAllowedAndPost(post, bot, chat_id):
             post_url = ''
 
     if 'message' in post and settings['allow_message']:
-        read_more, post_message = processPostMessage(post['message'])
+        read_more, post_message = processPostMessage(post['message'], post['status_type'])
     else:
         read_more, post_message = '', ''
 
@@ -612,7 +613,7 @@ def checkIfAllowedAndPost(post, bot, chat_id):
     elif (post['status_type'] == 'added_video' or (post['status_type'] == 'shared_story' and 'youtube.com' in post['message'])) and settings['allow_video']:
         print('Posting video...')
         try:
-            read_more, post_message = processPostMessage(post['message'])
+            read_more, post_message = processPostMessage(post['message'], post['status_type'])
         except KeyError:
             read_more, post_message = "", ""
         media_message = postVideoToChat(post, read_more, post_message, bot, chat_id)
