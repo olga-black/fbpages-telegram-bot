@@ -140,7 +140,7 @@ def loadTelegramBot(telegram_token):
     except InvalidToken:
        sys.exit('Fatal Error: Invalid Telegram Token')
 
-    updater = Updater(token=telegram_token)
+    updater = Updater(token=telegram_token, use_context=True)
     dispatcher = updater.dispatcher
     job_queue = updater.job_queue
 
